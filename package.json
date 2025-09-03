@@ -1,0 +1,22 @@
+{
+  "name": "modular-telegram-bot",
+  "version": "1.0.0",
+  "description": "A modular Telegram bot with MySQL using Node.js",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "nodejs",
+    "mysql",
+    "modular"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "mysql2": "^3.9.7",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
