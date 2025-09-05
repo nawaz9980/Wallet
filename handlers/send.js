@@ -2,11 +2,11 @@
 const axios = require("axios");
 const qs = require("qs");
 
-// Keep a memory lock to prevent double payouts
+// Keep a memory lock to prevent double payouts while processing
 const confirmedTx = new Set();
 
 module.exports = (bot, db) => {
- bot.onText(/^(\/withdraw|💸 Withdraw)$/, async (msg) => {
+  bot.onText(/^(\/withdraw|💸 Withdraw)$/, async (msg) => {
     const chatId = msg.chat.id;
     const telegramId = msg.from.id;
 
@@ -31,7 +31,7 @@ module.exports = (bot, db) => {
       if (walletRows.length === 0 || !walletRows[0].wallet_email) {
         return bot.sendMessage(
           chatId,
-          "⚠️ You don’t have a withdrawal wallet set yet.\n\n👉 Please set your wallet email using: `/wallet @@FiewinGamesRobot`"
+          "⚠️ You don’t have a withdrawal wallet set yet.\n\n👉 Please set your wallet email using: `/wallet your@email.com`"
         );
       }
 
@@ -120,114 +120,122 @@ module.exports = (bot, db) => {
 
       const lockKey = `${tgIdStr}:${amount}`;
       if (confirmedTx.has(lockKey)) {
-        return bot.answerCallbackQuery(query.id, { text: "Already processed.", show_alert: true });
+        return bot.answerCallbackQuery(query.id, {
+          text: "Already processing this request...",
+          show_alert: true,
+        });
       }
       confirmedTx.add(lockKey);
 
-      // ⏳ Edit message immediately to disable multiple clicks
-      await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
-        chat_id: chatId,
-        message_id: query.message.message_id,
-      });
-
-      // 🔄 Re-validate user + wallet
-      const [userRows] = await db.query(
-        "SELECT id, wallet_balance FROM users WHERE telegram_id = ? LIMIT 1",
-        [tgIdStr]
-      );
-      if (userRows.length === 0) {
-        return bot.answerCallbackQuery(query.id, { text: "User not found.", show_alert: true });
-      }
-
-      const userId = userRows[0].id;
-      const balance = parseFloat(userRows[0].wallet_balance);
-      if (balance < amount) {
-        return bot.editMessageText(
-          `❌ Insufficient balance.\nYour balance: *${balance.toFixed(8)} TRX*`,
-          { chat_id: chatId, message_id: query.message.message_id, parse_mode: "Markdown" }
-        );
-      }
-
-      const [walletRows] = await db.query(
-        "SELECT wallet_email FROM wallet WHERE user_id = ? LIMIT 1",
-        [userId]
-      );
-      if (walletRows.length === 0 || !walletRows[0].wallet_email) {
-        return bot.editMessageText(
-          "⚠️ You don’t have a withdrawal wallet set yet.\n\n👉 Please set your wallet email using: `/wallet your@email.com`",
-          { chat_id: chatId, message_id: query.message.message_id }
-        );
-      }
-
-      const walletEmail = walletRows[0].wallet_email;
-
-      // 6) Call FaucetPay API
       try {
-        const apiKey = process.env.FAUCETPAY_API_KEY;
-        if (!apiKey) {
-          return bot.editMessageText("❌ Server misconfigured: missing FAUCETPAY_API_KEY.", {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-          });
+        // ⏳ Edit message immediately to disable multiple clicks
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+        });
+
+        // 🔄 Re-validate user + wallet
+        const [userRows] = await db.query(
+          "SELECT id, wallet_balance FROM users WHERE telegram_id = ? LIMIT 1",
+          [tgIdStr]
+        );
+        if (userRows.length === 0) {
+          return bot.answerCallbackQuery(query.id, { text: "User not found.", show_alert: true });
         }
 
-        const satoshis = Math.floor(amount * 1e8);
-        const body = qs.stringify({
-          api_key: apiKey,
-          amount: satoshis,
-          to: walletEmail,
-          currency: "TRX",
-        });
-
-        const resp = await axios.post("https://faucetpay.io/api/v1/send", body, {
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          timeout: 15000,
-        });
-
-        const data = resp.data || {};
-        if (data.status === 200) {
-          // Deduct balance
-          await db.query(
-            "UPDATE users SET wallet_balance = wallet_balance - ? WHERE telegram_id = ?",
-            [amount, tgIdStr]
-          );
-
-          const txid = data.payout_id || data.transactionId || "N/A";
-
-          await bot.answerCallbackQuery(query.id, { text: "Sent ✅" });
-          await bot.editMessageText(
-            `✅ Successfully sent *${amount.toFixed(8)} TRX* to \`${walletEmail}\`\n🆔 TxID: \`${txid}\``,
+        const userId = userRows[0].id;
+        const balance = parseFloat(userRows[0].wallet_balance);
+        if (balance < amount) {
+          return bot.editMessageText(
+            `❌ Insufficient balance.\nYour balance: *${balance.toFixed(8)} TRX*`,
             { chat_id: chatId, message_id: query.message.message_id, parse_mode: "Markdown" }
           );
+        }
 
-          // 📢 Send log to channel
-          const LOG_CHANNEL = process.env.PAYMENT_LOG_CHANNEL_ID;
-          if (LOG_CHANNEL) {
-            bot.sendMessage(
-              LOG_CHANNEL,
-              `📤 *Payment Sent!*\n\n👤 User: [${query.from.first_name}](tg://user?id=${tgIdStr})\n💰 Amount: *${amount.toFixed(8)} TRX*\n📧 Wallet: \`${walletEmail}\`\n🆔 TxID: \`${txid}\``,
-              {
-                parse_mode: "Markdown",
-                reply_markup: {
-                  inline_keyboard: [
-                    [{ text: "🤖 Open Bot", url: `https://t.me/FiewinGamesRobot` }],
-                  ],
-                },
-              }
-            );
-          }
-        } else {
+        const [walletRows] = await db.query(
+          "SELECT wallet_email FROM wallet WHERE user_id = ? LIMIT 1",
+          [userId]
+        );
+        if (walletRows.length === 0 || !walletRows[0].wallet_email) {
           return bot.editMessageText(
-            `❌ FaucetPay Error: ${data.message || "Unknown error"}`,
+            "⚠️ You don’t have a withdrawal wallet set yet.\n\n👉 Please set your wallet email using: `/wallet your@email.com`",
             { chat_id: chatId, message_id: query.message.message_id }
           );
         }
-      } catch (apiErr) {
-        console.error("FaucetPay API Error:", apiErr.response?.data || apiErr.message);
-        return bot.editMessageText(
-          "❌ Failed to process withdrawal. Please try again later.",
-          { chat_id: chatId, message_id: query.message.message_id }
-        );
+
+        const walletEmail = walletRows[0].wallet_email;
+
+        // 6) Call FaucetPay API
+        try {
+          const apiKey = process.env.FAUCETPAY_API_KEY;
+          if (!apiKey) {
+            return bot.editMessageText("❌ Server misconfigured: missing FAUCETPAY_API_KEY.", {
+              chat_id: chatId,
+              message_id: query.message.message_id,
+            });
+          }
+
+          const satoshis = Math.floor(amount * 1e8);
+          const body = qs.stringify({
+            api_key: apiKey,
+            amount: satoshis,
+            to: walletEmail,
+            currency: "TRX",
+          });
+
+          const resp = await axios.post("https://faucetpay.io/api/v1/send", body, {
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            timeout: 15000,
+          });
+
+          const data = resp.data || {};
+          if (data.status === 200) {
+            // Deduct balance
+            await db.query(
+              "UPDATE users SET wallet_balance = wallet_balance - ? WHERE telegram_id = ?",
+              [amount, tgIdStr]
+            );
+
+            const txid = data.payout_id || data.transactionId || "N/A";
+
+            await bot.answerCallbackQuery(query.id, { text: "Sent ✅" });
+            await bot.editMessageText(
+              `✅ Successfully sent *${amount.toFixed(8)} TRX* to \`${walletEmail}\`\n🆔 TxID: \`${txid}\``,
+              { chat_id: chatId, message_id: query.message.message_id, parse_mode: "Markdown" }
+            );
+
+            // 📢 Send log to channel
+            const LOG_CHANNEL = process.env.PAYMENT_LOG_CHANNEL_ID;
+            if (LOG_CHANNEL) {
+              bot.sendMessage(
+                LOG_CHANNEL,
+                `📤 *Payment Sent!*\n\n👤 User: [${query.from.first_name}](tg://user?id=${tgIdStr})\n💰 Amount: *${amount.toFixed(8)} TRX*\n📧 Wallet: \`${walletEmail}\`\n🆔 TxID: \`${txid}\``,
+                {
+                  parse_mode: "Markdown",
+                  reply_markup: {
+                    inline_keyboard: [
+                      [{ text: "🤖 Open Bot", url: `https://t.me/FiewinGamesRobot` }],
+                    ],
+                  },
+                }
+              );
+            }
+          } else {
+            return bot.editMessageText(
+              `❌ FaucetPay Error: ${data.message || "Unknown error"}`,
+              { chat_id: chatId, message_id: query.message.message_id }
+            );
+          }
+        } catch (apiErr) {
+          console.error("FaucetPay API Error:", apiErr.response?.data || apiErr.message);
+          return bot.editMessageText(
+            "❌ Failed to process withdrawal. Please try again later.",
+            { chat_id: chatId, message_id: query.message.message_id }
+          );
+        }
+      } finally {
+        // Always release the lock after finishing
+        confirmedTx.delete(lockKey);
       }
     } catch (err) {
       console.error("❌ send callback error:", err);
